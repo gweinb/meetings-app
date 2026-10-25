@@ -958,6 +958,7 @@ async function adminBackup(body) {
     <label class="toggle" style="margin-bottom:.8rem"><input type="checkbox" id="backup-auto" ${st.autoBackup ? 'checked' : ''}/> Automatic daily backup (${st.browserMode ? 'when you open the app' : 'while the dashboard is running'})</label>
     <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-bottom:1.2rem">
       <button id="backup-save">Save settings</button><button class="primary" id="backup-now">⬇ Backup now</button>
+      ${st.browserMode ? '<label class="btn" id="backup-import-label">⬆ Import backup… <input type="file" id="backup-import" accept=".zip,application/zip" hidden /></label>' : ''}
       <span class="muted small" id="backup-last">${st.lastBackup ? `Last backup: ${esc(fmtDateTime(st.lastBackup))}` : 'No backup yet'}</span>
     </div>
     <h3>Backups (${st.backups.length})</h3>
@@ -966,6 +967,14 @@ async function adminBackup(body) {
         <td class="actions-col"><a class="btn small" href="/api/backups/${enc(b.name)}/download">Download</a></td></tr>`).join('')}</tbody></table>`
       : emptyState('No backups yet. Click <b>Backup now</b>.')}
     <p class="muted small" style="margin-top:1rem"><b>To restore:</b> ${st.browserMode ? 'close the app, unzip a backup into your data folder (overwrite), then open the app again.' : `stop the dashboard, unzip a backup into <span class="folder-path">${esc(S.root)}</span> (overwrite), then start it again.`}</p>`;
+  $('#backup-import', body)?.addEventListener('change', (e) => guarded(async () => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!confirm(`Import "${file.name}"? Files in the backup overwrite files with the same name (your current data is backed up first).`)) return;
+    const r = await backend.importZip(file);
+    toast(`Imported ${r.files} files${r.backup ? ` (previous data saved as ${r.backup})` : ''}`);
+    await render();
+  }));
   $('#backup-choose', body)?.addEventListener('click', () => guarded(async () => {
     await backend.chooseBackupFolder();
     toast('Backup folder selected');
@@ -1033,7 +1042,7 @@ async function render() {
     badge.textContent = openCount;
     badge.hidden = !openCount;
     $('#sidebar-foot').innerHTML = mode === 'browser'
-      ? `<div>📁 ${esc(S.root)}</div><button type="button" class="link small" id="change-folder">Change folder</button>`
+      ? `<div>${backend.kind === 'browser-storage' ? '🗄 Stored in this browser' : `📁 ${esc(S.root)}`}</div><button type="button" class="link small" id="change-folder">Change storage</button>`
       : esc(S.root);
     const scrollY = window.scrollY;
     if (page === 'dashboard') await viewDashboard(app);
@@ -1117,7 +1126,12 @@ document.addEventListener('click', (e) => {
 });
 document.addEventListener('click', (e) => {
   if (!e.target.closest('#change-folder')) return;
-  guarded(async () => connectWith(() => MeetingsBrowser.choose()));
+  guarded(async () => {
+    await flushPendingSave();
+    await MeetingsBrowser.disconnect();
+    backend = null;
+    await render();
+  });
 });
 
 async function connectWith(getBackend) {
@@ -1137,22 +1151,51 @@ async function renderConnect() {
   const app = $('#app');
   const supported = MeetingsBrowser.supported();
   const stored = supported ? await MeetingsBrowser.storedName() : '';
-  $('#sidebar-foot').textContent = 'No folder connected';
+  const blocked = UI.pickerBlocked || !supported;
+  $('#sidebar-foot').textContent = 'No storage connected';
   app.innerHTML = `
-    <div class="page-head"><div><h1>Meetings</h1><div class="subtitle">Prepare meetings, take minutes and track actions — on files in a folder on your computer.</div></div></div>
-    <div class="card callout connect" id="connect">
-      <h2>📁 Connect your Meetings folder</h2>
-      <p>This version runs entirely in your browser. It reads and writes the folder you choose (for example <span class="folder-path">C:\\Users\\you\\Work\\Meetings</span> or a OneDrive folder). <b>Nothing is uploaded</b> — your meeting data never leaves your computer.</p>
-      ${supported
-        ? `<div class="toolbar">${stored ? `<button class="primary" id="reconnect">Open “${esc(stored)}”</button><button id="choose-folder">Choose another folder…</button>` : '<button class="primary" id="choose-folder">Choose your Meetings folder…</button>'}</div>
-           <p class="muted small" style="margin-bottom:0">Pick the folder that contains your people &amp; groups (an empty folder starts fresh). The browser asks for permission once per session.</p>`
-        : '<p><b>Your browser does not support folder access.</b> Please use Microsoft Edge or Google Chrome on a computer.</p>'}
+    <div class="page-head"><div><h1>Meetings</h1><div class="subtitle">Prepare meetings, take minutes and track actions — your data stays on your computer.</div></div></div>
+    ${UI.pickerBlocked ? `<div class="card callout warn-callout" id="picker-blocked">
+      <h2>⚠ Folder access is blocked on this computer</h2>
+      <p>Your browser refused to let this site use a folder. That happens when your organisation's policy disallows it (setting <code>DefaultFileSystemWriteGuardSetting</code>) or when the page runs inside an embedded browser (for example inside VS Code). You can:</p>
+      <ul>
+        <li><b>Use browser storage</b> below — works under that policy; download backups regularly.</li>
+        <li>Use the <b>desktop version</b> (the <i>Meetings</i> desktop shortcut, or <a href="http://127.0.0.1:4317/" target="_blank" rel="noopener">http://127.0.0.1:4317</a>), which keeps everything in your Meetings folder.</li>
+        <li>Ask IT to allow this site with the policy <code>FileSystemWriteAskForUrls</code> = <code>${esc(location.origin)}</code>.</li>
+      </ul></div>` : ''}
+    <div class="grid cols-2">
+      <div class="card callout connect" id="connect">
+        <h2>📁 Use a folder on this computer</h2>
+        <p>The app reads and writes the folder you choose (for example <span class="folder-path">C:\\Users\\you\\Work\\Meetings</span> or a OneDrive folder) — the same files as the desktop version. <b>Nothing is uploaded.</b></p>
+        ${supported
+          ? `<div class="toolbar">${stored ? `<button class="primary" id="reconnect">Open “${esc(stored)}”</button><button id="choose-folder">Choose another folder…</button>` : `<button class="${blocked ? '' : 'primary'}" id="choose-folder">Choose your Meetings folder…</button>`}</div>
+             <p class="muted small" style="margin-bottom:0">Pick the folder that contains your people &amp; groups (an empty folder starts fresh). The browser asks for permission once per session.</p>`
+          : '<p><b>Your browser does not support folder access.</b> Use Microsoft Edge or Google Chrome on a computer — or browser storage.</p>'}
+      </div>
+      <div class="card" id="connect-browser-storage">
+        <h2>🗄 Keep the data in this browser</h2>
+        <p>Works everywhere, including where folder access is blocked. Data stays in this browser profile on this computer. Use <b>Admin → Backup</b> to download backups, and <b>Import backup</b> to bring in data from the desktop version (its OneDrive backup ZIPs) or another computer.</p>
+        <div class="toolbar"><button class="${blocked ? 'primary' : ''}" id="use-browser-storage">Use browser storage</button></div>
+        <p class="muted small" style="margin-bottom:0">Clearing this site's browsing data deletes it — keep a downloaded backup.</p>
+      </div>
     </div>
     ${howItWorks({ withButtons: false })}`;
-  document.title = 'Connect folder · Meetings';
+  document.title = 'Connect · Meetings';
   document.body.dataset.rendered = 'connect';
   $('#reconnect', app)?.addEventListener('click', () => guarded(() => connectWith(() => MeetingsBrowser.restore({ request: true }))));
-  $('#choose-folder', app)?.addEventListener('click', () => guarded(() => connectWith(() => MeetingsBrowser.choose())));
+  $('#choose-folder', app)?.addEventListener('click', async () => {
+    try {
+      await connectWith(() => MeetingsBrowser.choose());
+    } catch (e) {
+      if (e.name === 'AbortError') return; // user cancelled the picker
+      if (MeetingsBrowser.isBlocked(e)) {
+        UI.pickerBlocked = true;
+        return renderConnect();
+      }
+      toast(e.message, true);
+    }
+  });
+  $('#use-browser-storage', app).addEventListener('click', () => guarded(() => connectWith(() => MeetingsBrowser.useBrowserStorage())));
 }
 
 // ---------- installable app (PWA) ----------

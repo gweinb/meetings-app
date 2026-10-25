@@ -50,6 +50,10 @@ h3 { font-size: .92rem; font-weight: 600; margin: 0 0 .5rem; }
 .install-btn:not([hidden]) + .sidebar-foot { margin-top: 0; }
 [hidden] { display: none !important; }
 .connect p { max-width: 70ch; }
+.warn-callout { background: var(--warn-soft); border-color: #fcd34d; }
+.warn-callout ul { margin: .4rem 0 0; padding-left: 1.2rem; }
+.warn-callout li { margin: .25rem 0; }
+code { background: #f1f5f9; padding: .05rem .3rem; border-radius: 4px; font-size: .88em; }
 
 main { flex: 1; min-width: 0; max-width: 1400px; margin: 0 auto; padding: 1.75rem 2rem 3rem; }
 .page-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 1.5rem; flex-wrap: wrap; }

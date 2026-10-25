@@ -179,13 +179,51 @@
     return new Blob([...chunks, ...central, new Uint8Array(end.buffer)], { type: 'application/zip' });
   }
 
+  // Reads a ZIP via its central directory (works for ZIPs from this app, Windows Explorer, 7-Zip, …).
+  async function readZip(blob) {
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    const dv = new DataView(buf.buffer);
+    let eocd = -1;
+    for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) {
+      if (dv.getUint32(i, true) === 0x06054b50) {
+        eocd = i;
+        break;
+      }
+    }
+    if (eocd < 0) throw httpError(400, 'Not a valid ZIP file');
+    const count = dv.getUint16(eocd + 10, true);
+    let p = dv.getUint32(eocd + 16, true);
+    const dec = new TextDecoder();
+    const out = [];
+    for (let n = 0; n < count; n++) {
+      if (dv.getUint32(p, true) !== 0x02014b50) throw httpError(400, 'Corrupt ZIP central directory');
+      const method = dv.getUint16(p + 10, true);
+      const compSize = dv.getUint32(p + 20, true);
+      const nameLen = dv.getUint16(p + 28, true);
+      const extraLen = dv.getUint16(p + 30, true);
+      const commentLen = dv.getUint16(p + 32, true);
+      const localOff = dv.getUint32(p + 42, true);
+      const name = dec.decode(buf.subarray(p + 46, p + 46 + nameLen)).replace(/\\/g, '/');
+      p += 46 + nameLen + extraLen + commentLen;
+      if (name.endsWith('/')) continue;
+      const start = localOff + 30 + dv.getUint16(localOff + 26, true) + dv.getUint16(localOff + 28, true);
+      const raw = buf.subarray(start, start + compSize);
+      let data;
+      if (method === 0) data = raw;
+      else if (method === 8) data = new Uint8Array(await new Response(new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer());
+      else throw httpError(400, `Unsupported compression in ${name}`);
+      out.push({ name, data });
+    }
+    return out;
+  }
+
   const stamp = (d = new Date()) => {
     const p = (n) => String(n).padStart(2, '0');
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
   };
 
   // ---------- backend ----------
-  function createBackend(rootHandle, backupHandle) {
+  function createBackend(rootHandle, backupHandle, kind = 'folder') {
     const store = createStore(rootHandle);
     const core = createCore(store);
     let backupDir = backupHandle || null;
@@ -197,10 +235,11 @@
     async function loadSettings() {
       const s = await core.readJson('_config/settings.json', {});
       return {
-        backupFolder: backupDir ? backupDir.name : `${store.display('_backups')} (inside the data folder)`,
+        backupFolder: backupDir ? backupDir.name : kind === 'browser-storage' ? 'Inside this browser — download backups to keep copies elsewhere' : `${store.display('_backups')} (inside the data folder)`,
         backupKeep: Number.isInteger(s.backupKeep) && s.backupKeep > 0 ? s.backupKeep : 30,
         autoBackup: s.autoBackup !== false,
         browserMode: true,
+        storageKind: kind,
       };
     }
 
@@ -304,36 +343,72 @@
       return status();
     }
 
-    return { api, download, autoBackup, chooseBackupFolder, name: rootHandle.name, core };
+    // Restores / moves data from a backup ZIP (from either version). Backs up the current data first.
+    async function importZip(file) {
+      const entries = await readZip(file);
+      const safe = entries.filter(({ name }) => {
+        const segs = name.split('/');
+        return name && !name.endsWith('/') && !/^([a-z]:|\/)/i.test(name) && !segs.some((s) => !s || s === '..' || s.startsWith('.')) && !['_app', '_backups', 'node_modules'].includes(segs[0]);
+      });
+      if (!safe.length) throw httpError(400, 'This ZIP contains no meeting data');
+      let backupName = '';
+      if ((await store.list('')).some((e) => !['_backups'].includes(e.name))) backupName = (await runBackup()).name;
+      for (const { name, data } of safe) {
+        const segs = name.split('/');
+        const fh = await (await store.dir(segs.slice(0, -1).join('/'), true)).getFileHandle(segs[segs.length - 1], { create: true });
+        const w = await fh.createWritable();
+        await w.write(data);
+        await w.close();
+      }
+      return { files: safe.length, skipped: entries.length - safe.length, backup: backupName };
+    }
+
+    return { api, download, autoBackup, chooseBackupFolder, importZip, name: rootHandle.name, kind, core };
   }
 
   // ---------- connecting to a folder ----------
   const supported = () => typeof window.showDirectoryPicker === 'function';
   const testMode = () => new URLSearchParams(location.search).get('store') === 'opfs';
+  const opfsRoot = async (name) => (await navigator.storage.getDirectory()).getDirectoryHandle(name, { create: true });
 
   async function restore({ request = false } = {}) {
-    if (testMode()) {
-      const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('meetings-test', { create: true });
-      return createBackend(root, null);
-    }
+    if (testMode()) return createBackend(await opfsRoot('meetings-test'), null, 'folder');
+    if ((await loadHandle('kind')) === 'browser-storage') return useBrowserStorage();
     const root = await loadHandle('root');
     if (!root || !(await hasPermission(root, request))) return null;
     const backupDir = await loadHandle('backupDir');
     const backupOk = backupDir && (await hasPermission(backupDir, request).catch(() => false));
-    return createBackend(root, backupOk ? backupDir : null);
+    return createBackend(root, backupOk ? backupDir : null, 'folder');
   }
 
   async function choose() {
     const root = await window.showDirectoryPicker({ id: 'meetings-data', mode: 'readwrite' });
     if (!(await hasPermission(root, true))) throw httpError(403, 'Permission to the folder was not granted');
     await saveHandle('root', root);
+    await saveHandle('kind', 'folder');
     return restore();
   }
 
+  // Data kept in the browser's private storage (origin private file system). Works where company
+  // policy blocks write access to user folders; protected by downloadable backups.
+  async function useBrowserStorage() {
+    if (navigator.storage.persist) await navigator.storage.persist().catch(() => false);
+    await saveHandle('kind', 'browser-storage');
+    return createBackend(await opfsRoot('meetings'), null, 'browser-storage');
+  }
+
+  async function disconnect() {
+    await saveHandle('kind', '');
+  }
+
   async function storedName() {
+    if ((await loadHandle('kind')) === 'browser-storage') return '';
     const h = await loadHandle('root');
     return h ? h.name : '';
   }
 
-  window.MeetingsBrowser = { supported, testMode, restore, choose, storedName, buildZip, crc32 };
+  // True when the browser / company policy refuses the folder picker (not when the user cancels it).
+  const isBlocked = (e) => e && (e.name === 'NotAllowedError' || e.name === 'SecurityError');
+
+  window.MeetingsBrowser = { supported, testMode, restore, choose, useBrowserStorage, disconnect, storedName, isBlocked, buildZip, readZip, crc32 };
 })();
