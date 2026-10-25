@@ -3,32 +3,26 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Meetings Dashboard</title>
-  <meta name="theme-color" content="#111827" />
-  <meta name="description" content="Prepare meetings, take minutes and track action items — on files in a folder on your computer." />
-  <link rel="manifest" href="manifest.webmanifest" />
+  <title>Meetings – moved to the desktop app</title>
   <link rel="icon" href="icon.svg" type="image/svg+xml" />
-  <link rel="apple-touch-icon" href="icon-192.png" />
-  <link rel="stylesheet" href="styles.css" />
+  <style>
+    body { font-family: "Segoe UI", system-ui, sans-serif; background: #f4f6fb; color: #0f172a; display: grid; place-items: center; min-height: 100vh; margin: 0; }
+    main { background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; padding: 2rem 2.2rem; max-width: 560px; box-shadow: 0 10px 30px rgba(15,23,42,.08); }
+    h1 { margin: 0 0 .5rem; font-size: 1.5rem; } p { line-height: 1.55; color: #334155; }
+    img { width: 56px; height: 56px; }
+  </style>
 </head>
 <body>
-  <aside class="sidebar">
-    <a class="brand" href="#/"><span class="brand-logo">M</span><span>Meetings</span></a>
-    <nav>
-      <a href="#/" data-nav="dashboard"><svg viewBox="0 0 24 24"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg><span>Dashboard</span></a>
-      <a href="#/meetings" data-nav="meetings"><svg viewBox="0 0 24 24"><path d="M19 4h-1V2h-2v2H8V2H6v2H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2V6a2 2 0 00-2-2zm0 16H5V10h14v10zM7 12h5v5H7z"/></svg><span>Meetings</span></a>
-      <a href="#/actions" data-nav="actions"><svg viewBox="0 0 24 24"><path d="M19 3H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2V5a2 2 0 00-2-2zm-9 14l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg><span>Actions</span><span class="nav-badge" id="nav-open" hidden></span></a>
-      <a href="#/groups" data-nav="groups"><svg viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5s-3 1.34-3 3 1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5C15 14.17 10.33 13 8 13zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg><span>People &amp; groups</span></a>
-      <a href="#/admin" data-nav="admin"><svg viewBox="0 0 24 24"><path d="M19.14 12.94a7.07 7.07 0 000-1.88l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96a7.03 7.03 0 00-1.62-.94l-.36-2.54A.48.48 0 0013.93 2h-3.86a.48.48 0 00-.48.41l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.49.49 0 00-.59.22L2.71 8.47a.48.48 0 00.12.61l2.03 1.58a7.07 7.07 0 000 1.88l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.25.41.48.41h3.86c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 00-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1112 8.4a3.6 3.6 0 010 7.2z"/></svg><span>Admin</span></a>
-    </nav>
-    <button type="button" class="install-btn" id="install-app" hidden>⬇ Install app</button>
-    <div class="sidebar-foot" id="sidebar-foot"></div>
-  </aside>
-  <main id="app"><p class="muted">Loading…</p></main>
-  <div id="toast" class="toast" hidden></div>
-  <dialog id="dialog"><form method="dialog" id="dialog-form"></form></dialog>
-  <script src="core.js"></script>
-  <script src="browser-store.js"></script>
-  <script src="app.js"></script>
+  <main>
+    <img src="icon.svg" alt="" />
+    <h1>Meetings now runs as a desktop app</h1>
+    <p>This web version has been retired. Meetings now keeps all data in a local SQLite database (<code>meetings.db</code>) in your Meetings folder and runs on your computer at <a href="http://127.0.0.1:4317/">http://127.0.0.1:4317</a> — use the <b>Meetings</b> desktop shortcut to start it.</p>
+    <p>If you used the browser-storage option of this web version, nothing was uploaded; that data stayed in your browser on this computer.</p>
+  </main>
+  <script>
+    // Remove the old offline copy of the web app from this browser.
+    if ('serviceWorker' in navigator) navigator.serviceWorker.getRegistrations().then((rs) => rs.forEach((r) => r.unregister()));
+    if (window.caches) caches.keys().then((ks) => ks.forEach((k) => caches.delete(k)));
+  </script>
 </body>
 </html>
