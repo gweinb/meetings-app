@@ -23,12 +23,11 @@ const S = { config: { people: [], meetingTypes: [], buckets: [] }, forums: [], m
 const UI = { actionFilters: { ...DEFAULT_FILTERS }, adminTab: 'people', meetingTab: 'agenda', meetingTabFor: '', meetingsFilter: { when: 'upcoming', forum: '' }, preview: false, showClosed: false };
 let pendingSave = null;
 
-// Opened from the local server (http://127.0.0.1:4317) the API is same-origin. Opened as the web app
-// (GitHub Pages) it calls the local Meetings service on this computer and signs in with the password.
-const IS_LOCAL = ['127.0.0.1', 'localhost'].includes(location.hostname);
-const API_BASE = IS_LOCAL ? '' : localStorage.getItem('meetings-api-base') || 'http://127.0.0.1:4317';
+// The app runs on GitHub Pages and works with the local Meetings service on this computer, which owns
+// the database (meetings.db). Every request carries the session from the password sign-in.
+const API_BASE = localStorage.getItem('meetings-api-base') || 'http://127.0.0.1:4317';
 const TOKEN_KEY = 'meetings-token';
-const getToken = () => (IS_LOCAL ? '' : localStorage.getItem(TOKEN_KEY) || '');
+const getToken = () => localStorage.getItem(TOKEN_KEY) || '';
 
 class AuthError extends Error {}
 
@@ -39,11 +38,11 @@ async function apiFetch(url, opts = {}) {
   let res;
   try {
     // targetAddressSpace lets Chrome ask for "local network access" instead of failing.
-    res = await fetch(API_BASE + url, { ...opts, headers, ...(IS_LOCAL ? {} : { targetAddressSpace: 'loopback' }) });
+    res = await fetch(API_BASE + url, { ...opts, headers, targetAddressSpace: 'loopback' });
   } catch {
     throw new AuthError('offline');
   }
-  if (res.status === 401 && !IS_LOCAL && !url.startsWith('/api/auth/login')) {
+  if (res.status === 401 && !/^\/api\/auth\/(login|setup|password)/.test(url)) {
     localStorage.removeItem(TOKEN_KEY);
     throw new AuthError('login');
   }
@@ -956,39 +955,27 @@ async function viewAdmin(app) {
 
 async function adminSecurity(body) {
   const st = await api('GET', '/api/auth/status');
-  const url = st.webAppUrls[0] || '';
   body.innerHTML = `
-    <p class="muted" style="margin-top:0">The <b>web app</b> (<a href="${esc(url)}" target="_blank" rel="noopener">${esc(url)}</a>) shows your meetings from the database on this computer. It needs this password; the desktop app on this computer does not.</p>
-    <p id="pw-state"><b>Password:</b> ${st.passwordSet ? '✅ set — the web app is enabled' : '⚠ not set — the web app is disabled'}</p>
-    ${st.local ? `<form id="pw-form" class="row" style="max-width:560px">
-        <div class="field" style="flex:1"><label>${st.passwordSet ? 'New password' : 'Password'}</label><input type="password" name="password" autocomplete="new-password" minlength="4" required /></div>
-        <div class="field" style="flex:1"><label>Repeat</label><input type="password" name="repeat" autocomplete="new-password" required /></div>
-        <button type="submit" class="primary" style="margin-bottom:.8rem">${st.passwordSet ? 'Change password' : 'Set password'}</button>
-      </form>
-      ${st.passwordSet ? '<button type="button" class="danger small" id="pw-remove">Remove password (disable the web app)</button>' : ''}
-      <p class="muted small">Changing or removing the password signs out the web app everywhere.</p>`
-      : '<p class="muted">The password can only be set or changed in the desktop app on this computer (<a href="http://127.0.0.1:4317/#/admin" target="_blank" rel="noopener">http://127.0.0.1:4317</a> → Admin → Security).</p>'}`;
+    <p class="muted" style="margin-top:0">Your data is in <span class="folder-path">${esc(st.database)}</span> on this computer and is never uploaded. The password protects access to it from this web app.</p>
+    <form id="pw-form" class="row" style="max-width:760px">
+      <div class="field" style="flex:1"><label>Current password</label><input type="password" name="current" autocomplete="current-password" required /></div>
+      <div class="field" style="flex:1"><label>New password</label><input type="password" name="password" autocomplete="new-password" minlength="4" required /></div>
+      <div class="field" style="flex:1"><label>Repeat new password</label><input type="password" name="repeat" autocomplete="new-password" required /></div>
+      <button type="submit" class="primary" style="margin-bottom:.8rem">Change password</button>
+    </form>
+    <p class="muted small">Changing the password signs out all other browsers.</p>`;
   const form = $('#pw-form', body);
-  if (form) {
-    form.onsubmit = (e) => {
-      e.preventDefault();
-      const pw = form.elements.password.value;
-      if (pw !== form.elements.repeat.value) return toast('The two passwords do not match', true);
-      guarded(async () => {
-        await api('PUT', '/api/auth/password', { password: pw });
-        toast('Password saved — the web app is enabled');
-        await render();
-      });
-    };
-  }
-  $('#pw-remove', body)?.addEventListener('click', () => {
-    if (!confirm('Remove the password? The web app will stop working until you set a new one.')) return;
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const pw = form.elements.password.value;
+    if (pw !== form.elements.repeat.value) return toast('The two new passwords do not match', true);
     guarded(async () => {
-      await api('DELETE', '/api/auth/password');
-      toast('Password removed — the web app is disabled');
+      const r = await api('PUT', '/api/auth/password', { currentPassword: form.elements.current.value, password: pw });
+      if (r.token) localStorage.setItem(TOKEN_KEY, r.token);
+      toast('Password changed');
       await render();
     });
-  });
+  };
 }
 
 function adminList(body, key) {
@@ -1138,9 +1125,7 @@ async function render() {
     const badge = $('#nav-open');
     badge.textContent = openCount;
     badge.hidden = !openCount;
-    $('#sidebar-foot').innerHTML = IS_LOCAL
-      ? `<span title="All data is stored in this SQLite database">Database: ${esc(S.root)}</span>`
-      : `<span title="The web app uses the database on this computer">Database on this computer:<br>${esc(S.root)}</span><br><button type="button" class="link small" id="sign-out">Sign out</button>`;
+    $('#sidebar-foot').innerHTML = `<span title="All data is stored in this SQLite database on your computer">Database on this computer:<br>${esc(S.root)}</span><br><button type="button" class="link small" id="sign-out">Sign out</button>`;
     const scrollY = window.scrollY;
     if (page === 'dashboard') await viewDashboard(app);
     else if (page === 'meetings') await viewMeetings(app);
@@ -1215,11 +1200,10 @@ document.addEventListener('click', (e) => {
 
 async function boot() {
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
-  if (!IS_LOCAL) document.body.classList.add('web-mode');
   render();
 }
 
-// ---------- web app (GitHub Pages): sign-in and downloads via the local Meetings service ----------
+// ---------- sign-in and downloads via the local Meetings service ----------
 async function renderGate(reason) {
   const app = $('#app');
   let status = null;
@@ -1234,18 +1218,21 @@ async function renderGate(reason) {
   const card = (id, title, html) => `<div class="card callout connect" id="${id}"><h2>${title}</h2>${html}</div>`;
   let inner;
   if (reason === 'offline') {
-    inner = card('gate-offline', '🔌 Start Meetings on this computer', `
-      <p>The web app works with the database <b>on this computer</b> (<span class="folder-path">meetings.db</span> in your Meetings folder) through the local Meetings service. It isn't reachable right now.</p>
+    inner = card('gate-offline', '🔌 The Meetings service on this computer is not running', `
+      <p>Your meetings are stored in <span class="folder-path">meetings.db</span> in your Meetings folder. The web app reads and writes it through a small background service on this computer, which isn't reachable right now.</p>
       <ol>
-        <li>Start it with the <b>Meetings</b> desktop shortcut (it also starts automatically when you sign in to Windows).</li>
-        <li>If your browser asks to let this site <b>access apps and services on this device / local network</b>, click <b>Allow</b>.</li>
+        <li>It starts automatically when you sign in to Windows. To start it now, double-click the <b>Meetings</b> shortcut on your desktop.</li>
+        <li>If your browser asks to let this site <b>access apps and services on this device</b>, click <b>Allow</b>.</li>
       </ol>
-      <div class="toolbar"><button class="primary" id="gate-retry">Try again</button><a class="btn" href="http://127.0.0.1:4317/" target="_blank" rel="noopener">Open the desktop app</a></div>`);
+      <div class="toolbar"><button class="primary" id="gate-retry">Try again</button></div>`);
   } else if (!status.passwordSet) {
-    inner = card('gate-nopassword', '🔒 Set a password first', `
-      <p>For safety, the web app only works after you set a password in the desktop app:</p>
-      <ol><li>Open <a href="http://127.0.0.1:4317/#/admin" target="_blank" rel="noopener">the desktop app</a> → <b>Admin → Security</b>.</li><li>Set a password, then come back here and sign in.</li></ol>
-      <div class="toolbar"><button class="primary" id="gate-retry">I've set it — continue</button></div>`);
+    inner = card('gate-setup', '🔒 Create your password', `
+      <p>Welcome! Choose a password to protect your meetings. Your data stays in <span class="folder-path">${esc(status.database)}</span> on this computer — nothing is uploaded.</p>
+      <form id="setup-form" class="row" style="max-width:620px">
+        <div class="field" style="flex:1;margin:0"><input type="password" name="password" placeholder="Password (min. 4 characters)" autocomplete="new-password" aria-label="Password" minlength="4" required /></div>
+        <div class="field" style="flex:1;margin:0"><input type="password" name="repeat" placeholder="Repeat password" autocomplete="new-password" aria-label="Repeat password" required /></div>
+        <button type="submit" class="primary">Create password</button>
+      </form>`);
   } else {
     inner = card('gate-login', '🔒 Sign in', `
       <p>Enter your Meetings password. Your data stays in <span class="folder-path">meetings.db</span> on this computer — nothing is uploaded.</p>
@@ -1256,8 +1243,22 @@ async function renderGate(reason) {
   }
   app.innerHTML = `<div class="page-head"><div><h1>Meetings</h1><div class="subtitle">Prepare meetings, take minutes and track actions — your data stays on your computer.</div></div></div>${inner}`;
   document.title = 'Sign in · Meetings';
-  document.body.dataset.rendered = `gate:${reason === 'offline' ? 'offline' : status.passwordSet ? 'login' : 'nopassword'}`;
+  document.body.dataset.rendered = `gate:${reason === 'offline' ? 'offline' : status.passwordSet ? 'login' : 'setup'}`;
   $('#gate-retry', app)?.addEventListener('click', () => render());
+  const setup = $('#setup-form', app);
+  if (setup) {
+    setup.elements.password.focus();
+    setup.onsubmit = (e) => {
+      e.preventDefault();
+      if (setup.elements.password.value !== setup.elements.repeat.value) return toast('The two passwords do not match', true);
+      guarded(async () => {
+        const r = await api('POST', '/api/auth/setup', { password: setup.elements.password.value });
+        localStorage.setItem(TOKEN_KEY, r.token);
+        toast('Password created — you are signed in');
+        await render();
+      });
+    };
+  }
   const form = $('#login-form', app);
   if (form) {
     form.elements.password.focus();
@@ -1286,7 +1287,7 @@ document.addEventListener('click', (e) => {
 // In the web app, downloads (export, files, backups) need the sign-in token, so they are fetched and saved here.
 document.addEventListener('click', (e) => {
   const link = e.target.closest('a[href^="/api/"]');
-  if (!link || IS_LOCAL) return;
+  if (!link) return;
   e.preventDefault();
   guarded(async () => {
     const res = await apiFetch(link.getAttribute('href'));
