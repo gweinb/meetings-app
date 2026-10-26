@@ -105,6 +105,17 @@ const personTag = (id) => {
   return `<span class="person">${avatar(id, name)}${esc(name)}</span>`;
 };
 const peopleList = (ids) => (ids || []).map(personTag).join('') || '<span class="muted small">No participants</span>';
+// Meeting attendees: you, plus the chosen attendees; without attendees, the person / group the meeting is with (e.g. a 1:1).
+function attendeeNames(forumName, attendeeIds) {
+  const others = attendeeIds?.length ? attendeeIds.map((id) => personName(id) || id) : [forumName];
+  return [...new Set([S.config.myName || '', ...others].filter(Boolean))];
+}
+const attendeeTags = (names) => names.map((n) => `<span class="person">${avatar(n, n)}${esc(n)}</span>`).join('');
+// Fills an "## Attendees" section that is still empty (only blanks or "-") with the attendee names.
+function withAttendees(md, names) {
+  return String(md || '').replace(/(^|\n)(##\s*Attendees[^\n]*\n)((?:[ \t]*-?[ \t]*(?:\n|$))*)(?=##|$)/i, (all, pre, head, body) =>
+    names.length ? `${pre}${head}\n${names.map((n) => `- ${n}`).join('\n')}\n\n` : all);
+}
 
 function bucketChips(ids) {
   return (ids || [])
@@ -748,7 +759,9 @@ async function viewMeeting(app, forumId, meetingId, isCurrent = () => true) {
     context: `Background on ${esc(f.name)} — shared by all meetings with them.`,
   };
   const fileLabel = { agenda: 'Agenda', minutes: 'Minutes', context: 'Background' }[tab];
+  const attendees = attendeeNames(f.name, m.attendeeIds);
   const docText = tab === 'context' ? f.context : m[tab];
+  const previewText = tab === 'minutes' ? withAttendees(docText, attendees) : docText;
   // f.meetings is sorted newest first.
   const pos = f.meetings.findIndex((x) => x.id === m.id);
   const prev = pos >= 0 ? f.meetings[pos + 1] : null;
@@ -758,7 +771,7 @@ async function viewMeeting(app, forumId, meetingId, isCurrent = () => true) {
     <div class="crumbs"><a href="#/meetings">Meetings</a> › <a href="${forumHref(f.id)}">${esc(f.name)}</a> ›</div>
     <div class="page-head"><div><h1>${esc(m.title)} ${statusBadge(m.status)}</h1>
       <div class="subtitle"><span>📅 ${esc(fmtDate(m.date))}${m.time ? ' · ' + esc(m.time) : ''}</span><span>with <a href="${forumHref(f.id)}">${esc(f.name)}</a></span></div>
-      <div style="margin-top:.5rem">${peopleList(m.attendeeIds)}</div>
+      <div style="margin-top:.5rem" id="meeting-attendees">${attendeeTags(attendees)}</div>
       <div class="meeting-summary" id="meeting-summary"><b>Actions from this meeting:</b> ${actionSummary(mine, { emptyText: 'none yet' })}${followUps.length ? `<button type="button" class="link small" id="goto-followups">${followUps.length} still open from earlier meetings</button>` : ''}</div>
       ${prev || next ? `<div class="meeting-nav">${prev ? `<a id="prev-meeting" href="${meetingHref(f.id, prev.id)}">← Previous: ${esc(fmtShort(prev.date))} ${esc(prev.title)}</a>` : ''}${next ? `<a id="next-meeting" href="${meetingHref(f.id, next.id)}">Next: ${esc(fmtShort(next.date))} ${esc(next.title)} →</a>` : ''}</div>` : ''}</div>
       <div class="toolbar">${m.status === 'planned' ? '<button id="mark-held">✓ Mark as held</button>' : ''}
@@ -768,9 +781,10 @@ async function viewMeeting(app, forumId, meetingId, isCurrent = () => true) {
         <div class="tabs steps-tabs">${Object.entries(tabs).map(([k, v]) => `<button data-tab="${k}" class="${k === tab ? 'active' : ''}">${v}</button>`).join('')}
           <span class="spacer"></span>
           <label class="toggle"><input type="checkbox" id="preview-toggle" ${UI.preview ? 'checked' : ''}/> Preview</label>
+          ${UI.preview ? `<button type="button" class="small" id="copy-preview" title="Copy as formatted text (paste into Outlook, Teams, Word…)" style="margin-left:.6rem">⧉ Copy</button>` : ''}
           <span class="save-state" id="doc-state" style="margin-left:.75rem">${fileLabel}</span></div>
         <p class="muted small" id="tab-hint" style="margin:-.25rem 0 .6rem">${hints[tab]}</p>
-        ${UI.preview ? `<div class="md" style="min-height:460px">${markdown(docText)}${tab === 'minutes' ? `
+        ${UI.preview ? `<div class="md" id="preview" style="min-height:460px">${markdown(previewText)}${tab === 'minutes' ? `
           <div class="minutes-actions" id="minutes-actions"><h2>Actions from this meeting ${actionSummary(mine, { emptyText: 'none yet' })}</h2>
             ${mine.length ? `<table class="compact"><thead><tr><th>Action</th><th>Owner</th><th>Due</th><th>Status</th></tr></thead><tbody>${sortActions(mine).map((a) => `
               <tr class="${isOverdue(a) ? 'overdue' : ''} ${isOpen(a) ? '' : 'closed'}" data-summary-row="${esc(a.id)}"><td class="title">${esc(a.title)}${a.bucketIds.length ? `<div>${bucketChips(a.bucketIds)}</div>` : ''}</td>
@@ -838,6 +852,13 @@ async function viewMeeting(app, forumId, meetingId, isCurrent = () => true) {
   bindActionTable($('#meeting-actions', app), mine, refresh);
   bindActionTable($('#followups', app), followUps, refresh);
   $('#goto-followups', app)?.addEventListener('click', () => $('#followups', app).scrollIntoView({ behavior: 'smooth', block: 'center' }));
+  $('#copy-preview', app)?.addEventListener('click', () => guarded(async () => {
+    const actionLines = tab === 'minutes' && mine.length
+      ? ['', '## Actions from this meeting', '', ...sortActions(mine).map((a) => `- [${isOpen(a) ? ' ' : 'x'}] ${a.title} (${personName(a.ownerId) || 'unassigned'}${a.dueDate ? ', due ' + a.dueDate : ''}) - ${a.status}`)]
+      : [];
+    await copyRich(previewForCopy($('#preview', app)), [String(previewText || '').trimEnd(), ...actionLines].join('\n') + '\n');
+    toast('Copied — paste it into an email, Teams or a document');
+  }));
   const attach = (files) => guarded(async () => {
     if (!files.length) return;
     await flushPendingSave();
@@ -882,6 +903,34 @@ async function viewMeeting(app, forumId, meetingId, isCurrent = () => true) {
       location.hash = forumHref(f.id);
     });
   };
+}
+
+// Email-friendly copy of a preview: plain names instead of avatars, inline table borders.
+function previewForCopy(el) {
+  const c = el.cloneNode(true);
+  c.querySelectorAll('.avatar, button, select').forEach((x) => x.remove());
+  c.querySelectorAll('table').forEach((t) => t.setAttribute('style', 'border-collapse:collapse;margin-top:6px'));
+  c.querySelectorAll('th, td').forEach((x) => x.setAttribute('style', 'border:1px solid #d1d5db;padding:4px 8px;text-align:left;vertical-align:top'));
+  c.querySelectorAll('.as-pill').forEach((x) => x.setAttribute('style', 'font-size:12px;font-weight:600;margin-right:6px'));
+  return `<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px">${c.innerHTML}</div>`;
+}
+
+async function copyRich(html, text) {
+  try {
+    await navigator.clipboard.write([new ClipboardItem({ 'text/html': new Blob([html], { type: 'text/html' }), 'text/plain': new Blob([text], { type: 'text/plain' }) })]);
+    return;
+  } catch {}
+  try {
+    await navigator.clipboard.writeText(text);
+    return;
+  } catch {}
+  const ta = Object.assign(document.createElement('textarea'), { value: text });
+  ta.style.cssText = 'position:fixed;opacity:0';
+  document.body.append(ta);
+  ta.select();
+  const ok = document.execCommand('copy');
+  ta.remove();
+  if (!ok) throw new Error('Copying is not allowed by the browser');
 }
 
 async function viewActions(app) {
@@ -1012,6 +1061,10 @@ function adminList(body, key) {
   };
   const draw = () => {
     body.innerHTML = `
+      ${key === 'people' ? `<form id="my-name-form" class="row my-name" style="align-items:flex-end;margin-bottom:1rem">
+        <div class="field" style="margin:0"><label for="my-name">Your name</label><input id="my-name" name="myName" value="${esc(S.config.myName || '')}" placeholder="e.g. Gilad" /></div>
+        <button type="submit" class="small">Save name</button>
+        <span class="muted small" style="align-self:center">Added to every meeting's attendees (with a 1:1 it is you + the person).</span></form>` : ''}
       <p class="muted" style="margin-top:0">${esc(def.help)}</p>
       <datalist id="cat-list">${[...new Set(['Topic', 'Area', ...S.config.buckets.map((b) => b.category).filter(Boolean)])].map((c) => `<option value="${esc(c)}">`).join('')}</datalist>
       ${draft.length ? `<table class="admin-list"><thead><tr>${def.cols.map(([, l]) => `<th>${esc(l)}</th>`).join('')}<th>Used</th><th></th></tr></thead><tbody>
@@ -1024,6 +1077,14 @@ function adminList(body, key) {
       <div style="margin-top:1rem;display:flex;gap:.5rem"><button id="add-row">+ Add</button><span style="flex:1"></span>
         <span class="unsaved" id="unsaved" ${UI.adminDirty ? '' : 'hidden'}>● Unsaved changes</span>
         <button id="revert">Revert</button><button class="primary" id="save">Save ${esc(def.title.toLowerCase())}</button></div>`;
+    $('#my-name-form', body)?.addEventListener('submit', (e) => {
+      e.preventDefault();
+      guarded(async () => {
+        S.config = await api('PUT', '/api/config', { ...S.config, myName: e.target.elements.myName.value });
+        toast('Your name is saved');
+        await render();
+      });
+    });
     $$('input[data-i]', body).forEach((inp) => (inp.oninput = () => {
       draft[inp.dataset.i][inp.dataset.k] = inp.value;
       markDirty();
