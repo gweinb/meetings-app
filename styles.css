@@ -111,6 +111,11 @@ td.title { min-width: 240px; }
 td.title a { font-weight: 550; color: var(--text); }
 td.title a:hover { color: var(--accent); }
 td.actions-col { white-space: nowrap; text-align: right; }
+td.actions-col button.icon { padding: .2rem .4rem; margin-left: .15rem; }
+button:disabled { opacity: .45; cursor: default; }
+th.select-col, td.select-col { width: 1%; padding-right: 0; }
+.bulk-bar { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; margin-bottom: .75rem; }
+.chip.ext-ref { background: #eef2ff; color: #3730a3; margin-left: .35rem; }
 td select { padding: .2rem .35rem; font-size: .85em; }
 
 /* ---------- controls ---------- */

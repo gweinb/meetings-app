@@ -29,8 +29,8 @@ function actionSummary(list, { emptyText = 'No actions' } = {}) {
 }
 const DEFAULT_FILTERS = { status: 'active', forum: '', owner: '', bucket: '', overdue: false, q: '' };
 
-const S = { config: { people: [], meetingTypes: [], buckets: [] }, forums: [], meetings: [], actions: [], root: '' };
-const UI = { actionFilters: { ...DEFAULT_FILTERS }, adminTab: 'people', meetingTab: 'agenda', meetingTabFor: '', meetingsFilter: { when: 'upcoming', forum: '' }, preview: false, showClosed: false };
+const S = { config: { people: [], meetingTypes: [], buckets: [] }, forums: [], meetings: [], actions: [], archivedActions: [], root: '' };
+const UI = { actionFilters: { ...DEFAULT_FILTERS }, selectedActions: new Set(), adminTab: 'people', meetingTab: 'agenda', meetingTabFor: '', meetingsFilter: { when: 'upcoming', forum: '' }, preview: false, showClosed: false };
 let pendingSave = null;
 
 // The app runs on GitHub Pages and works with the local Meetings service on this computer, which owns
@@ -253,7 +253,7 @@ function sortActions(list) {
 }
 
 // ---------- action table + dialogs ----------
-function actionTable(list, { showForum = true, showMeeting = true, compact = false, empty = 'No action items.' } = {}) {
+function actionTable(list, { showForum = true, showMeeting = true, compact = false, selectable = false, rowActions = false, empty = 'No action items.' } = {}) {
   if (!list.length) return emptyState(esc(empty));
   if (compact) {
     // Narrow panels: owner / due / priority under the title, status always visible.
@@ -271,10 +271,13 @@ function actionTable(list, { showForum = true, showMeeting = true, compact = fal
       .join('');
     return `<table class="compact"><tbody>${rows}</tbody></table>`;
   }
+  const sel = UI.selectedActions;
   const rows = sortActions(list)
     .map((a) => `
       <tr class="${isOverdue(a) ? 'overdue' : ''} ${isOpen(a) ? '' : 'closed'}" data-row="${esc(a.id)}">
+        ${selectable ? `<td class="select-col"><input type="checkbox" data-select="${esc(a.id)}" aria-label="Select ${esc(a.title)}" ${sel.has(a.id) ? 'checked' : ''}/></td>` : ''}
         <td class="title"><a href="#" data-edit="${esc(a.id)}">${esc(a.title)}</a>
+          ${a.externalRef ? `<span class="chip ext-ref" data-ext-ref="${esc(a.id)}" title="External ref (task tool ID)">${esc(a.externalRef)}</span>` : ''}
           ${a.details ? `<div class="muted small">${esc(a.details.slice(0, 140))}${a.details.length > 140 ? '…' : ''}</div>` : ''}
           ${a.bucketIds.length ? `<div>${bucketChips(a.bucketIds)}</div>` : ''}</td>
         <td>${a.ownerId ? personTag(a.ownerId) : '<span class="muted">—</span>'}</td>
@@ -283,9 +286,18 @@ function actionTable(list, { showForum = true, showMeeting = true, compact = fal
         <td><select data-status="${esc(a.id)}" aria-label="Status">${options(ACTION_STATUSES, a.status)}</select></td>
         ${showForum ? `<td><a href="${forumHref(a.forum)}">${esc(a.forum)}</a></td>` : ''}
         ${showMeeting ? `<td><a href="${meetingHref(a.forum, a.meeting)}">${esc(fmtShort(a.meetingDate))}</a><div class="muted small">${esc(a.meetingTitle)}</div></td>` : ''}
+        ${rowActions ? `<td class="actions-col">
+          <button type="button" class="small icon" data-row-edit="${esc(a.id)}" title="Edit" aria-label="Edit">✎</button>
+          ${a.archivedAt ? '' : `<button type="button" class="small icon" data-row-pulse="${esc(a.id)}" title="${/^Pulse /i.test(a.externalRef) ? 'Already in Pulse' : 'Send to Pulse'}" aria-label="Send to Pulse" ${a.externalRef ? 'disabled' : ''}>↗</button>`}
+          ${a.archivedAt
+            ? `<button type="button" class="small icon" data-row-restore="${esc(a.id)}" title="Restore" aria-label="Restore">↩</button>`
+            : `<button type="button" class="small icon" data-row-archive="${esc(a.id)}" title="Archive" aria-label="Archive">🗄</button>`}
+          <button type="button" class="small icon danger" data-row-delete="${esc(a.id)}" title="Delete" aria-label="Delete">🗑</button>
+        </td>` : ''}
       </tr>`)
     .join('');
-  return `<table><thead><tr><th>Action</th><th>Owner</th><th>Due</th><th>Priority</th><th>Status</th>${showForum ? '<th>With</th>' : ''}${showMeeting ? '<th>From meeting</th>' : ''}</tr></thead><tbody>${rows}</tbody></table>`;
+  const allSelected = selectable && list.every((a) => sel.has(a.id));
+  return `<table><thead><tr>${selectable ? `<th class="select-col"><input type="checkbox" id="select-all" aria-label="Select all" ${allSelected ? 'checked' : ''}/></th>` : ''}<th>Action</th><th>Owner</th><th>Due</th><th>Priority</th><th>Status</th>${showForum ? '<th>With</th>' : ''}${showMeeting ? '<th>From meeting</th>' : ''}${rowActions ? '<th></th>' : ''}</tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 function bindActionTable(root, list, onChange) {
@@ -305,6 +317,36 @@ function bindActionTable(root, list, onChange) {
       openActionDialog({ action, onSaved: onChange });
     })
   );
+  const on = (attr, fn) => $$(`[data-${attr}]`, root).forEach((b) => b.addEventListener('click', () => fn(b.getAttribute(`data-${attr}`))));
+  on('row-edit', (id) => openActionDialog({ action: list.find((x) => x.id === id), onSaved: onChange }));
+  on('row-pulse', (id) => guarded(async () => (await sendToPulse([id]), await onChange())));
+  on('row-archive', (id) => guarded(async () => (await setArchived([id], true), await onChange())));
+  on('row-restore', (id) => guarded(async () => (await setArchived([id], false), await onChange())));
+  on('row-delete', (id) => guarded(async () => (await deleteActions([id], list), await onChange())));
+}
+
+async function sendToPulse(ids) {
+  const r = await api('POST', '/api/pulse/export', { ids });
+  const sent = r.results.filter((x) => x.pulseId && !x.skipped);
+  const parts = [];
+  if (sent.length) parts.push(`Sent ${sent.length} to Pulse (${sent.map((x) => x.pulseId).join(', ')})`);
+  if (r.skipped) parts.push(`${r.skipped} already in Pulse`);
+  if (r.failed) parts.push(`${r.failed} not sent: ${r.results.find((x) => x.error).error}`);
+  toast(parts.join(' · '), r.failed > 0);
+}
+
+async function setArchived(ids, archived) {
+  await api('POST', '/api/actions/bulk', { ids, op: archived ? 'archive' : 'restore' });
+  toast(`${ids.length === 1 ? 'Action' : `${ids.length} actions`} ${archived ? 'archived' : 'restored'}`);
+}
+
+// Returns false when the user cancels the confirmation.
+async function deleteActions(ids, list) {
+  const one = ids.length === 1 && list.find((x) => x.id === ids[0]);
+  if (!confirm(one ? `Delete action "${one.title}"?` : `Delete ${ids.length} actions? This cannot be undone.`)) return false;
+  await api('POST', '/api/actions/bulk', { ids, op: 'delete' });
+  toast(ids.length === 1 ? 'Action deleted' : `${ids.length} actions deleted`);
+  return true;
 }
 
 function openDialog(html, bind) {
@@ -347,6 +389,7 @@ function openActionDialog({ action, forum, meeting, defaults = {}, onSaved }) {
        ${a.updates?.length ? `<label>History</label><div class="history">${a.updates.slice().reverse().map((u) => `<div><span class="muted">${esc(fmtDateTime(u.at))}</span> — ${esc(u.text)}</div>`).join('')}</div>` : ''}` : ''}
      <div class="dialog-actions">
        ${!isNew ? '<button type="button" class="danger" data-delete style="margin-right:auto">Delete</button>' : ''}
+       ${!isNew ? `<button type="button" data-archive>${a.archivedAt ? '↩ Restore' : '🗄 Archive'}</button>` : ''}
        <button type="button" data-close>Cancel</button>
        <button type="submit" class="primary">${isNew ? 'Add action' : 'Save'}</button>
      </div>`,
@@ -382,6 +425,14 @@ function openActionDialog({ action, forum, meeting, defaults = {}, onSaved }) {
           await onSaved?.();
         });
       });
+      $('[data-archive]', form)?.addEventListener('click', () =>
+        guarded(async () => {
+          await api('PATCH', `/api/actions/${enc(a.id)}`, { archived: !a.archivedAt });
+          close();
+          toast(a.archivedAt ? 'Action restored' : 'Action archived');
+          await onSaved?.();
+        })
+      );
     }
   );
 }
@@ -968,9 +1019,10 @@ async function copyRich(html, text) {
 
 async function viewActions(app) {
   const F = UI.actionFilters;
-  const filtered = S.actions.filter((a) => {
+  const archivedView = F.status === 'archived';
+  const filtered = (archivedView ? S.archivedActions : S.actions).filter((a) => {
     if (F.status === 'active' && !isOpen(a)) return false;
-    if (F.status && !['active', 'all'].includes(F.status) && a.status !== F.status) return false;
+    if (F.status && !['active', 'all', 'archived'].includes(F.status) && a.status !== F.status) return false;
     if (F.forum && a.forum !== F.forum) return false;
     if (F.owner && a.ownerId !== F.owner) return false;
     if (F.bucket && !a.bucketIds.includes(F.bucket)) return false;
@@ -986,16 +1038,23 @@ async function viewActions(app) {
     <div class="card">
       <div class="filters">
         <input id="f-q" placeholder="🔎 Search actions…" value="${esc(F.q)}" />
-        <select id="f-status" aria-label="Status filter">${options([{ id: 'active', name: 'Open (not done/cancelled)' }, { id: 'all', name: 'All statuses' }, ...ACTION_STATUSES.map((s) => ({ id: s, name: s }))], F.status)}</select>
+        <select id="f-status" aria-label="Status filter">${options([{ id: 'active', name: 'Open (not done/cancelled)' }, { id: 'all', name: 'All statuses' }, ...ACTION_STATUSES.map((s) => ({ id: s, name: s })), { id: 'archived', name: `Archived (${S.archivedActions.length})` }], F.status)}</select>
         <select id="f-forum" aria-label="Meeting with filter">${options(S.forums, F.forum, { blank: 'With anyone' })}</select>
         <select id="f-owner" aria-label="Owner filter">${options(S.config.people, F.owner, { blank: 'All owners' })}</select>
         <select id="f-bucket" aria-label="Bucket filter">${options(S.config.buckets, F.bucket, { blank: 'All buckets' })}</select>
         <label class="toggle"><input type="checkbox" id="f-overdue" ${F.overdue ? 'checked' : ''}/> Overdue only</label>
         <button class="link" id="f-reset">Reset</button>
       </div>
-      <div id="action-list">${actionTable(filtered, { empty: S.actions.length ? 'No actions match the filters.' : 'No action items yet. Capture them from a meeting page.' })}</div>
+      <div class="bulk-bar" id="bulk-bar">
+        <label class="toggle"><span id="bulk-count">0 selected</span></label>
+        ${archivedView ? '' : '<button type="button" class="small" id="bulk-pulse">↗ Send to Pulse</button>'}
+        ${archivedView ? '<button type="button" class="small" id="bulk-restore">↩ Restore</button>' : '<button type="button" class="small" id="bulk-archive">🗄 Archive</button>'}
+        <button type="button" class="small danger" id="bulk-delete">🗑 Delete</button>
+        <button type="button" class="link small" id="bulk-clear">Clear selection</button>
+      </div>
+      <div id="action-list">${actionTable(filtered, { selectable: true, rowActions: true, empty: archivedView ? 'No archived actions.' : S.actions.length ? 'No actions match the filters.' : 'No action items yet. Capture them from a meeting page.' })}</div>
     </div>
-    <p class="muted small">Exports use the current filters. CSV (UTF-8) columns: id, title, details, owner, ownerEmail, dueDate, status, priority, buckets, meetingWith, meeting, meetingDate, externalRef, createdAt, completedAt.</p>`;
+    <p class="muted small">Select actions to send them to Pulse, archive or delete them together. Archived actions are hidden everywhere and can be restored from the “Archived” filter. Exports use the current filters. CSV (UTF-8) columns: id, title, details, owner, ownerEmail, dueDate, status, priority, buckets, meetingWith, meeting, meetingDate, externalRef, createdAt, completedAt.</p>`;
 
   const set = (k, v) => { F[k] = v; render(); };
   $('#f-status', app).onchange = (e) => set('status', e.target.value);
@@ -1016,6 +1075,43 @@ async function viewActions(app) {
   };
   $('#f-reset', app).onclick = () => { UI.actionFilters = { ...DEFAULT_FILTERS }; render(); };
   bindActionTable($('#action-list', app), filtered, render);
+
+  // Selection only keeps actions that are visible with the current filters.
+  const sel = UI.selectedActions;
+  const visible = new Set(filtered.map((a) => a.id));
+  for (const id of [...sel]) if (!visible.has(id)) sel.delete(id);
+  const updateBar = () => {
+    $('#bulk-count', app).textContent = `${sel.size} selected`;
+    $$('#bulk-bar button', app).forEach((b) => (b.disabled = !sel.size));
+    const all = $('#select-all', app);
+    if (all) all.checked = sel.size > 0 && sel.size === visible.size;
+  };
+  $$('[data-select]', app).forEach((cb) =>
+    cb.addEventListener('change', () => {
+      cb.checked ? sel.add(cb.dataset.select) : sel.delete(cb.dataset.select);
+      updateBar();
+    })
+  );
+  $('#select-all', app)?.addEventListener('change', (e) => {
+    for (const id of visible) e.target.checked ? sel.add(id) : sel.delete(id);
+    $$('[data-select]', app).forEach((cb) => (cb.checked = e.target.checked));
+    updateBar();
+  });
+  const bulk = (fn) => () => guarded(async () => {
+    if ((await fn([...sel])) === false) return;
+    sel.clear();
+    await render();
+  });
+  $('#bulk-pulse', app)?.addEventListener('click', bulk(sendToPulse));
+  $('#bulk-archive', app)?.addEventListener('click', bulk((ids) => setArchived(ids, true)));
+  $('#bulk-restore', app)?.addEventListener('click', bulk((ids) => setArchived(ids, false)));
+  $('#bulk-delete', app).addEventListener('click', bulk((ids) => deleteActions(ids, filtered)));
+  $('#bulk-clear', app).addEventListener('click', () => {
+    sel.clear();
+    $$('[data-select]', app).forEach((cb) => (cb.checked = false));
+    updateBar();
+  });
+  updateBar();
 }
 
 // ---------- admin ----------
