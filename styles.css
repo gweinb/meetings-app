@@ -148,6 +148,7 @@ label { display: block; font-size: .8em; font-weight: 550; color: var(--muted); 
 /* ---------- chips / badges ---------- */
 .chip { display: inline-flex; align-items: center; font-size: .72rem; font-weight: 550; padding: .1rem .5rem; border-radius: 999px; background: #f1f5f9; color: #334155; margin: .15rem .25rem 0 0; white-space: nowrap; }
 .chip .dot { width: 7px; height: 7px; border-radius: 50%; margin-right: .3rem; }
+.recur-chip { display: inline-block; font-size: .7rem; font-weight: 600; padding: .08rem .5rem; border-radius: 999px; background: #e0f2fe; color: #075985; margin-left: .45rem; white-space: nowrap; vertical-align: middle; }
 .person { display: inline-flex; align-items: center; gap: .35rem; margin: .1rem .5rem .1rem 0; font-size: .88em; white-space: nowrap; }
 .avatar { width: 24px; height: 24px; border-radius: 50%; display: inline-grid; place-items: center; color: #fff; font-size: .68rem; font-weight: 650; flex-shrink: 0; }
 .status { display: inline-block; font-size: .72rem; font-weight: 600; padding: .12rem .55rem; border-radius: 999px; white-space: nowrap; text-transform: capitalize; }

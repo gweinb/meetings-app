@@ -129,6 +129,22 @@ function bucketChips(ids) {
 }
 
 const statusBadge = (s) => `<span class="status ${esc(s)}">${esc(s.replace('-', ' '))}</span>`;
+const recurChip = (m) => (m.seriesId ? '<span class="recur-chip" data-recurring title="Part of a recurring meeting">↻ Recurring</span>' : '');
+const FREQUENCIES = [
+  { id: 'weekly', name: 'Weekly (same weekday)' },
+  { id: 'workdays', name: 'Every workday (Mon–Fri)' },
+  { id: 'monthly-weekday', name: 'Monthly (same weekday, e.g. 2nd Tuesday)' },
+  { id: 'monthly-date', name: 'Monthly (same date, e.g. the 15th)' },
+];
+// Quick choices in the New meeting dialog: "frequency:interval".
+const REPEAT_CHOICES = [
+  { id: '', name: 'Does not repeat' },
+  { id: 'weekly:1', name: 'Every week' },
+  { id: 'weekly:2', name: 'Every 2 weeks' },
+  { id: 'workdays:1', name: 'Every workday (Mon–Fri)' },
+  { id: 'monthly-weekday:1', name: 'Every month (same weekday)' },
+  { id: 'monthly-date:1', name: 'Every month (same date)' },
+];
 const dateBadge = (d) => {
   if (!d) return '<div class="date-badge"><div class="m">—</div><div class="d">?</div></div>';
   const dt = parseDate(d);
@@ -512,7 +528,9 @@ function openNewMeetingDialog(preselect = '') {
      <div class="row">
        <div class="field"><label>Date *</label><input type="date" name="date" value="${esc(todayStr())}" /></div>
        <div class="field"><label>Time</label><input type="time" name="time" /></div>
+       <div class="field"><label>Repeats</label><select name="repeat" id="new-meeting-repeat">${options(REPEAT_CHOICES, '')}</select></div>
      </div>
+     <p class="muted small" id="repeat-hint" hidden>Creates a recurring meeting: the next meetings are always created about two weeks ahead. Manage it on the person / group page.</p>
      <div class="field"><label>Attendees</label>${peoplePicker('attendeeIds', initialGroup?.participantIds || [])}</div>
      <div class="dialog-actions">
        <button type="button" data-close>Cancel</button>
@@ -544,6 +562,7 @@ function openNewMeetingDialog(preselect = '') {
         }
       });
       if (initial === NEW) setTimeout(() => el.groupName.focus());
+      el.repeat.addEventListener('change', () => ($('#repeat-hint', form).hidden = !el.repeat.value));
       form.onsubmit = (e) => {
         e.preventDefault();
         const isNew = el.forum.value === NEW;
@@ -556,6 +575,15 @@ function openNewMeetingDialog(preselect = '') {
           if (isNew) {
             const g = await api('POST', '/api/forums', { name: groupName, typeId: el.typeId.value, participantIds: body.attendeeIds });
             forumId = g.id;
+          }
+          if (el.repeat.value) {
+            const [frequency, interval] = el.repeat.value.split(':');
+            const s = await api('POST', `/api/forums/${enc(forumId)}/series`, { ...body, startDate: body.date, frequency, interval: Number(interval) });
+            close();
+            toast(`Recurring meeting created · ${s.summary}`);
+            if (location.hash === forumHref(forumId)) render();
+            else location.hash = forumHref(forumId);
+            return;
           }
           const saved = await api('POST', `/api/forums/${enc(forumId)}/meetings`, body);
           close();
@@ -602,6 +630,52 @@ function openMeetingDialog(forum, meeting) {
   );
 }
 
+// Create or edit a recurring meeting of a person / group.
+function openSeriesDialog(forum, series = null) {
+  const s = series || { title: defaultMeetingTitle(forum), frequency: 'weekly', interval: 1, startDate: todayStr(), endDate: '', time: '', attendeeIds: forum.participantIds || [] };
+  openDialog(
+    `<h2>${series ? 'Edit' : 'New'} recurring meeting · ${esc(forum.name)}</h2>
+     <p class="muted small" style="margin-top:-.4rem">The next meetings are always created about two weeks ahead. Changes apply to upcoming meetings you haven't prepared yet; meetings you already edited, prepared or held are kept.</p>
+     <div class="field"><label>Title *</label><input name="title" value="${esc(s.title)}" required /></div>
+     <div class="row">
+       <div class="field"><label>Repeats</label><select name="frequency" id="series-frequency">${options(FREQUENCIES, s.frequency)}</select></div>
+       <div class="field" id="series-interval-field"><label>Every</label><input type="number" name="interval" id="series-interval" min="1" max="52" value="${esc(String(s.interval))}" /></div>
+     </div>
+     <div class="row">
+       <div class="field"><label>First meeting *</label><input type="date" name="startDate" value="${esc(s.startDate)}" required /></div>
+       <div class="field"><label>Ends (optional)</label><input type="date" name="endDate" value="${esc(s.endDate)}" /></div>
+       <div class="field"><label>Time</label><input type="time" name="time" value="${esc(s.time)}" /></div>
+     </div>
+     <div class="field"><label>Attendees</label>${peoplePicker('attendeeIds', s.attendeeIds)}</div>
+     <div class="dialog-actions">
+       <button type="button" data-close>Cancel</button>
+       <button type="submit" class="primary" id="save-series">${series ? 'Save' : 'Create recurring meeting'}</button>
+     </div>`,
+    (form, close) => {
+      const el = form.elements;
+      const syncInterval = () => ($('#series-interval-field', form).hidden = el.frequency.value === 'workdays');
+      el.frequency.addEventListener('change', syncInterval);
+      syncInterval();
+      form.onsubmit = (e) => {
+        e.preventDefault();
+        const body = {
+          title: el.title.value.trim(), frequency: el.frequency.value, interval: el.frequency.value === 'workdays' ? 1 : Number(el.interval.value) || 1,
+          startDate: el.startDate.value, endDate: el.endDate.value, time: el.time.value, attendeeIds: checkedValues(form, 'attendeeIds'),
+        };
+        if (!body.title || !body.startDate) return toast('Title and first meeting date are required', true);
+        guarded(async () => {
+          const saved = series
+            ? await api('PUT', `/api/series/${enc(series.id)}`, body)
+            : await api('POST', `/api/forums/${enc(forum.id)}/series`, body);
+          close();
+          toast(`Recurring meeting ${series ? 'saved' : 'created'} · ${saved.summary}`);
+          render();
+        });
+      };
+    }
+  );
+}
+
 // ---------- views ----------
 function statCard({ icon, label, value, cls = '', href = '', attrs = '' }) {
   const inner = `<div class="icon">${icon}</div><div><div class="num">${value}</div><div class="label">${esc(label)}</div></div>`;
@@ -610,7 +684,7 @@ function statCard({ icon, label, value, cls = '', href = '', attrs = '' }) {
 
 function meetingRow(m, cta) {
   return `<div class="list-row" data-meeting-row="${esc(m.id)}">${dateBadge(m.date)}
-    <div class="grow"><a href="${meetingHref(m.forum, m.id)}"><b>${esc(m.title)}</b></a>
+    <div class="grow"><a href="${meetingHref(m.forum, m.id)}"><b>${esc(m.title)}</b></a>${recurChip(m)}
       <div class="muted small">with ${esc(m.forum)}${m.time ? ' · ' + esc(m.time) : ''}</div>
       <div class="row-summary">${actionSummary(S.actions.filter((a) => a.forum === m.forum && a.meeting === m.id))}</div></div>
     ${statusBadge(m.status)}
@@ -796,14 +870,14 @@ async function viewForum(app, forumId, isCurrent = () => true) {
   app.innerHTML = `
     <div class="crumbs"><a href="#/groups">People & groups</a> ›</div>
     <div class="page-head"><div><h1>${esc(f.name)}</h1>
-      <div class="subtitle"><span>${esc(mtype(f.typeId)?.name || 'No type')}</span>${f.cadence ? `<span>${esc(f.cadence)}</span>` : ''}</div>
+      <div class="subtitle"><span>${esc(mtype(f.typeId)?.name || 'No type')}</span>${f.cadence ? `<span>${esc(f.cadence)}</span>` : ''}${(f.series || []).filter((s) => !s.ended).map((s) => `<span>↻ ${esc(s.summary)}</span>`).join('')}</div>
       <div style="margin-top:.5rem">${peopleList(f.participantIds)}</div>
       ${f.description ? `<p style="margin:.5rem 0 0">${esc(f.description)}</p>` : ''}</div>
       <div class="toolbar"><button id="edit-forum">Edit</button><button class="primary" id="new-meeting" data-new-meeting title="New meeting (shortcut: N)">+ New meeting<kbd>N</kbd></button></div></div>
     <div class="grid cols-2">
       <div class="card" id="meetings"><div class="card-head"><h2>Meetings</h2><span class="muted small">${f.meetings.length} total · click to open</span></div>
         ${f.meetings.length ? f.meetings.map((m) => `<div class="list-row">${dateBadge(m.date)}
-            <div class="grow"><a href="${meetingHref(f.id, m.id)}"><b>${esc(m.title)}</b></a>
+            <div class="grow"><a href="${meetingHref(f.id, m.id)}"><b>${esc(m.title)}</b></a>${recurChip(m)}
               <div class="muted small">${esc(fmtDate(m.date))}${m.time ? ' · ' + esc(m.time) : ''}</div>
               <div class="row-summary">${actionSummary(m.actions)}</div></div>
             ${statusBadge(m.status)}<a class="btn small" href="${meetingHref(f.id, m.id)}">Open →</a></div>`).join('')
@@ -815,11 +889,30 @@ async function viewForum(app, forumId, isCurrent = () => true) {
         ${UI.preview ? `<div class="md">${markdown(f.context)}</div>` : `<textarea id="context" style="min-height:320px">${esc(f.context)}</textarea>
         <div class="muted small" style="margin-top:.4rem;display:flex;justify-content:space-between;align-items:center"><span>Autosaves · Ctrl+S to save now</span><button class="primary small" id="save-context">Save</button></div>`}</div>
     </div>
+    <div class="card" id="series"><div class="card-head"><h2>Recurring meetings</h2><button class="small" id="new-series">+ Recurring meeting</button></div>
+      ${(f.series || []).length ? f.series.map((s) => `<div class="list-row" data-series="${esc(String(s.id))}">
+          <div class="grow"><b>${esc(s.title)}</b>
+            <div class="muted small" data-series-summary>↻ ${esc(s.summary)} · from ${esc(fmtDate(s.startDate))}${s.endDate ? ` until ${esc(fmtDate(s.endDate))}` : ''}</div>
+            <div class="muted small">${s.ended ? 'Ended' : s.nextDate ? `Next: ${esc(fmtDate(s.nextDate))}` : 'No upcoming meeting'}</div></div>
+          <button class="small" data-edit-series="${esc(String(s.id))}">Edit</button>
+          <button class="small danger" data-delete-series="${esc(String(s.id))}">Stop</button></div>`).join('')
+        : emptyState(`No recurring meetings. Use <b>+ Recurring meeting</b> for a meeting with ${esc(f.name)} that repeats (e.g. a weekly 1:1).`)}</div>
     <div class="card" id="forum-actions"><div class="card-head"><h2>${UI.showClosed ? 'All' : 'Open'} actions with ${esc(f.name)}</h2>
       <label class="toggle"><input type="checkbox" id="show-closed" ${UI.showClosed ? 'checked' : ''}/> Show closed</label></div>
       ${actionTable(shown, { showForum: false })}</div>`;
 
   $('#edit-forum', app).onclick = () => openForumDialog(f);
+  $('#new-series', app).onclick = () => openSeriesDialog(f);
+  $$('[data-edit-series]', app).forEach((b) => (b.onclick = () => openSeriesDialog(f, f.series.find((s) => String(s.id) === b.dataset.editSeries))));
+  $$('[data-delete-series]', app).forEach((b) => (b.onclick = () => {
+    const s = f.series.find((x) => String(x.id) === b.dataset.deleteSeries);
+    if (!confirm(`Stop recurring meeting "${s.title}"? Upcoming meetings you haven't prepared are removed; past meetings and ones you already prepared are kept.`)) return;
+    guarded(async () => {
+      await api('DELETE', `/api/series/${enc(s.id)}`);
+      toast('Recurring meeting stopped');
+      render();
+    });
+  }));
   bindNewMeetingButtons(app, f.id);
   $('#show-closed', app).onchange = (e) => ((UI.showClosed = e.target.checked), render());
   $$('[data-mode]', app).forEach((b) => (b.onclick = async () => { await flushPendingSave(); UI.preview = b.dataset.mode === 'preview'; render(); }));
@@ -864,7 +957,7 @@ async function viewMeeting(app, forumId, meetingId, isCurrent = () => true) {
 
   app.innerHTML = `
     <div class="crumbs"><a href="#/meetings">Meetings</a> › <a href="${forumHref(f.id)}">${esc(f.name)}</a> ›</div>
-    <div class="page-head"><div><h1>${esc(m.title)} ${statusBadge(m.status)}</h1>
+    <div class="page-head"><div><h1>${esc(m.title)} ${statusBadge(m.status)}${recurChip(m)}</h1>
       <div class="subtitle"><span>📅 ${esc(fmtDate(m.date))}${m.time ? ' · ' + esc(m.time) : ''}</span><span>with <a href="${forumHref(f.id)}">${esc(f.name)}</a></span></div>
       <div style="margin-top:.5rem" id="meeting-attendees">${attendeeTags(attendees)}</div>
       <div class="meeting-summary" id="meeting-summary"><b>Actions from this meeting:</b> ${actionSummary(mine, { emptyText: 'none yet' })}${followUps.length ? `<button type="button" class="link small" id="goto-followups">${followUps.length} still open from earlier meetings</button>` : ''}</div>
