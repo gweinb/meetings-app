@@ -218,6 +218,16 @@ dialog .history div { padding: .15rem 0; }
 .subtitle > span + span::before { content: "·"; margin-right: .4rem; color: var(--border-strong); }
 .folder-line { display: flex; align-items: center; gap: .6rem; margin-top: .45rem; flex-wrap: wrap; }
 .meeting-nav { display: flex; gap: .4rem 1.2rem; flex-wrap: wrap; margin-top: .5rem; font-size: .85em; }
+.action-summary { display: inline-flex; flex-wrap: wrap; gap: .3rem; align-items: center; vertical-align: middle; }
+.row-summary { margin-top: .25rem; }
+.as-pill { font-size: .75rem; font-weight: 600; padding: .1rem .55rem; border-radius: 999px; background: #f1f5f9; color: #334155; white-space: nowrap; }
+.as-open { background: #eef2ff; color: #4338ca; }
+.as-overdue { background: var(--danger-soft); color: var(--danger); }
+.as-done { background: var(--ok-soft); color: var(--ok); }
+.meeting-summary { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .8rem; margin-top: .6rem; font-size: .9em; }
+.meeting-summary a.small { font-size: .85em; }
+.minutes-actions { margin-top: 1.4rem; border-top: 1px solid var(--border, #e5e7eb); padding-top: .8rem; }
+.minutes-actions h2 { font-size: 1.05rem; display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
 .quick-add { display: grid; gap: .5rem; margin-bottom: .9rem; }
 .quick-add input[name="title"] { width: 100%; }
 .qa-row { display: flex; gap: .5rem; }

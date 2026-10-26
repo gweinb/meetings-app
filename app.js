@@ -17,6 +17,15 @@ const MEETING_STATUSES = ['planned', 'held', 'cancelled'];
 const PRIORITIES = ['high', 'medium', 'low'];
 const isOpen = (a) => a.status !== 'done' && a.status !== 'cancelled';
 const isOverdue = (a) => isOpen(a) && a.dueDate && a.dueDate < todayStr();
+// One consistent "how are this meeting's actions doing" line: total, open, overdue, done.
+function actionSummary(list, { emptyText = 'No actions' } = {}) {
+  if (!list.length) return `<span class="action-summary muted" data-action-summary="0">${esc(emptyText)}</span>`;
+  const open = list.filter(isOpen).length;
+  const overdue = list.filter(isOverdue).length;
+  const done = list.filter((a) => a.status === 'done').length;
+  const pill = (cls, text, key) => `<span class="as-pill ${cls}" data-as="${key}">${text}</span>`;
+  return `<span class="action-summary" data-action-summary="${list.length}">${pill('as-total', `📌 ${list.length} action${list.length > 1 ? 's' : ''}`, 'total')}${open ? pill('as-open', `${open} open`, 'open') : ''}${overdue ? pill('as-overdue', `⚠ ${overdue} overdue`, 'overdue') : ''}${done ? pill('as-done', `✓ ${done} done`, 'done') : ''}</span>`;
+}
 const DEFAULT_FILTERS = { status: 'active', forum: '', owner: '', bucket: '', overdue: false, q: '' };
 
 const S = { config: { people: [], meetingTypes: [], buckets: [] }, forums: [], meetings: [], actions: [], root: '' };
@@ -528,7 +537,8 @@ function statCard({ icon, label, value, cls = '', href = '', attrs = '' }) {
 function meetingRow(m, cta) {
   return `<div class="list-row" data-meeting-row="${esc(m.id)}">${dateBadge(m.date)}
     <div class="grow"><a href="${meetingHref(m.forum, m.id)}"><b>${esc(m.title)}</b></a>
-      <div class="muted small">with ${esc(m.forum)}${m.time ? ' · ' + esc(m.time) : ''}${m.openActions ? ` · ${m.openActions} open action${m.openActions > 1 ? 's' : ''}` : ''}</div></div>
+      <div class="muted small">with ${esc(m.forum)}${m.time ? ' · ' + esc(m.time) : ''}</div>
+      <div class="row-summary">${actionSummary(S.actions.filter((a) => a.forum === m.forum && a.meeting === m.id))}</div></div>
     ${statusBadge(m.status)}
     <a class="btn small" href="${meetingHref(m.forum, m.id)}">${cta}</a></div>`;
 }
@@ -688,7 +698,8 @@ async function viewForum(app, forumId, isCurrent = () => true) {
       <div class="card" id="meetings"><div class="card-head"><h2>Meetings</h2><span class="muted small">${f.meetings.length} total · click to open</span></div>
         ${f.meetings.length ? f.meetings.map((m) => `<div class="list-row">${dateBadge(m.date)}
             <div class="grow"><a href="${meetingHref(f.id, m.id)}"><b>${esc(m.title)}</b></a>
-              <div class="muted small">${esc(fmtDate(m.date))}${m.time ? ' · ' + esc(m.time) : ''} · ${m.actions.filter(isOpen).length} open / ${m.actions.length} actions</div></div>
+              <div class="muted small">${esc(fmtDate(m.date))}${m.time ? ' · ' + esc(m.time) : ''}</div>
+              <div class="row-summary">${actionSummary(m.actions)}</div></div>
             ${statusBadge(m.status)}<a class="btn small" href="${meetingHref(f.id, m.id)}">Open →</a></div>`).join('')
           : emptyState('No meetings yet. <button class="small primary" data-new-meeting>+ New meeting</button>')}</div>
       <div class="card"><div class="tabs"><button class="${UI.preview ? '' : 'active'}" data-mode="edit">Edit</button><button class="${UI.preview ? 'active' : ''}" data-mode="preview">Preview</button>
@@ -748,6 +759,7 @@ async function viewMeeting(app, forumId, meetingId, isCurrent = () => true) {
     <div class="page-head"><div><h1>${esc(m.title)} ${statusBadge(m.status)}</h1>
       <div class="subtitle"><span>📅 ${esc(fmtDate(m.date))}${m.time ? ' · ' + esc(m.time) : ''}</span><span>with <a href="${forumHref(f.id)}">${esc(f.name)}</a></span></div>
       <div style="margin-top:.5rem">${peopleList(m.attendeeIds)}</div>
+      <div class="meeting-summary" id="meeting-summary"><b>Actions from this meeting:</b> ${actionSummary(mine, { emptyText: 'none yet' })}${followUps.length ? `<button type="button" class="link small" id="goto-followups">${followUps.length} still open from earlier meetings</button>` : ''}</div>
       ${prev || next ? `<div class="meeting-nav">${prev ? `<a id="prev-meeting" href="${meetingHref(f.id, prev.id)}">← Previous: ${esc(fmtShort(prev.date))} ${esc(prev.title)}</a>` : ''}${next ? `<a id="next-meeting" href="${meetingHref(f.id, next.id)}">Next: ${esc(fmtShort(next.date))} ${esc(next.title)} →</a>` : ''}</div>` : ''}</div>
       <div class="toolbar">${m.status === 'planned' ? '<button id="mark-held">✓ Mark as held</button>' : ''}
         <button id="edit-meeting">Edit</button><button class="danger" id="archive-meeting">Archive</button></div></div>
@@ -758,7 +770,13 @@ async function viewMeeting(app, forumId, meetingId, isCurrent = () => true) {
           <label class="toggle"><input type="checkbox" id="preview-toggle" ${UI.preview ? 'checked' : ''}/> Preview</label>
           <span class="save-state" id="doc-state" style="margin-left:.75rem">${fileLabel}</span></div>
         <p class="muted small" id="tab-hint" style="margin:-.25rem 0 .6rem">${hints[tab]}</p>
-        ${UI.preview ? `<div class="md" style="min-height:460px">${markdown(docText)}</div>` : `<textarea id="doc" style="min-height:460px">${esc(docText)}</textarea>
+        ${UI.preview ? `<div class="md" style="min-height:460px">${markdown(docText)}${tab === 'minutes' ? `
+          <div class="minutes-actions" id="minutes-actions"><h2>Actions from this meeting ${actionSummary(mine, { emptyText: 'none yet' })}</h2>
+            ${mine.length ? `<table class="compact"><thead><tr><th>Action</th><th>Owner</th><th>Due</th><th>Status</th></tr></thead><tbody>${sortActions(mine).map((a) => `
+              <tr class="${isOverdue(a) ? 'overdue' : ''} ${isOpen(a) ? '' : 'closed'}" data-summary-row="${esc(a.id)}"><td class="title">${esc(a.title)}${a.bucketIds.length ? `<div>${bucketChips(a.bucketIds)}</div>` : ''}</td>
+                <td>${a.ownerId ? personTag(a.ownerId) : '<span class="muted">unassigned</span>'}</td>
+                <td class="due">${a.dueDate ? `${isOverdue(a) ? '⚠ ' : ''}${esc(fmtShort(a.dueDate))}` : '<span class="muted">—</span>'}</td>
+                <td>${esc(a.status)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted small">Log action items in ③ Actions — they appear here.</p>'}</div>` : ''}</div>` : `<textarea id="doc" style="min-height:460px">${esc(docText)}</textarea>
         <div class="muted small" style="margin-top:.35rem">Autosaves · Ctrl+S to save now · Markdown supported</div>`}
       </div>
       <div>
@@ -819,6 +837,7 @@ async function viewMeeting(app, forumId, meetingId, isCurrent = () => true) {
   };
   bindActionTable($('#meeting-actions', app), mine, refresh);
   bindActionTable($('#followups', app), followUps, refresh);
+  $('#goto-followups', app)?.addEventListener('click', () => $('#followups', app).scrollIntoView({ behavior: 'smooth', block: 'center' }));
   const attach = (files) => guarded(async () => {
     if (!files.length) return;
     await flushPendingSave();
