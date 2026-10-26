@@ -13,6 +13,7 @@ const fmtShort = (d) => (d ? parseDate(d).toLocaleDateString(undefined, { day: '
 const fmtDateTime = (iso) => (iso ? new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '');
 
 const ACTION_STATUSES = ['open', 'in-progress', 'waiting', 'done', 'cancelled'];
+const ADHOC_GROUP = 'Ad-hoc';
 const MEETING_STATUSES = ['planned', 'held', 'cancelled'];
 const PRIORITIES = ['high', 'medium', 'low'];
 const isOpen = (a) => a.status !== 'done' && a.status !== 'cancelled';
@@ -107,7 +108,7 @@ const personTag = (id) => {
 const peopleList = (ids) => (ids || []).map(personTag).join('') || '<span class="muted small">No participants</span>';
 // Meeting attendees: you, plus the chosen attendees; without attendees, the person / group the meeting is with (e.g. a 1:1).
 function attendeeNames(forumName, attendeeIds) {
-  const others = attendeeIds?.length ? attendeeIds.map((id) => personName(id) || id) : [forumName];
+  const others = attendeeIds?.length ? attendeeIds.map((id) => personName(id) || id) : forumName.toLowerCase() === ADHOC_GROUP.toLowerCase() ? [] : [forumName];
   return [...new Set([S.config.myName || '', ...others].filter(Boolean))];
 }
 const attendeeTags = (names) => names.map((n) => `<span class="person">${avatar(n, n)}${esc(n)}</span>`).join('');
@@ -585,7 +586,7 @@ async function viewDashboard(app) {
 
   app.innerHTML = `
     <div class="page-head"><div><h1>${greeting} 👋</h1><div class="subtitle">${esc(fmtDate(today))}</div></div>
-      <div class="toolbar"><a class="btn" href="#/meetings">All meetings</a><button class="primary" id="new-meeting-global" data-new-meeting title="New meeting (shortcut: N)">+ New meeting<kbd>N</kbd></button></div></div>
+      <div class="toolbar"><a class="btn" href="#/meetings">All meetings</a><button id="adhoc-meeting" data-adhoc title="Start an ad-hoc meeting now (shortcut: A)">⚡ Ad-hoc meeting<kbd>A</kbd></button><button class="primary" id="new-meeting-global" data-new-meeting title="New meeting (shortcut: N)">+ New meeting<kbd>N</kbd></button></div></div>
     ${S.meetings.length ? '' : howItWorks({ id: 'getting-started' })}
     <div class="grid stats">
       ${statCard({ icon: '📌', label: 'Open actions', value: open.length, href: '#/actions', attrs: 'data-stat="open"' })}
@@ -619,6 +620,38 @@ async function viewDashboard(app) {
 
 function bindNewMeetingButtons(root, preselect = '') {
   $$('[data-new-meeting]', root).forEach((b) => (b.onclick = () => openNewMeetingDialog(preselect)));
+  $$('[data-adhoc]', root).forEach((b) => (b.onclick = () => openAdhocDialog()));
+}
+
+// Ad-hoc meeting: starts right now, no person / group needed, opens on the minutes.
+function openAdhocDialog() {
+  const now = new Date();
+  const time = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  openDialog(
+    `<h2>⚡ Ad-hoc meeting</h2>
+     <p class="muted small" style="margin-top:-.4rem">Starts now (${esc(fmtDate(todayStr()))}, ${esc(time)}) and opens the minutes. It is filed under <b>${esc(ADHOC_GROUP)}</b> in People & groups.</p>
+     <div class="field"><label>Topic</label><input name="title" placeholder="Ad-hoc ${esc(time)}" /></div>
+     <div class="field"><label>Attendees</label>${peoplePicker('attendeeIds', [])}</div>
+     <div class="dialog-actions">
+       <button type="button" data-close>Cancel</button>
+       <button type="submit" class="primary">Start meeting</button>
+     </div>`,
+    (form, close) => {
+      setTimeout(() => form.elements.title.focus());
+      form.onsubmit = (e) => {
+        e.preventDefault();
+        guarded(async () => {
+          const saved = await api('POST', '/api/adhoc', { title: form.elements.title.value.trim(), date: todayStr(), time, attendeeIds: checkedValues(form, 'attendeeIds') });
+          close();
+          toast('Ad-hoc meeting started');
+          UI.meetingTabFor = `${saved.forum}/${saved.id}`;
+          UI.meetingTab = 'minutes';
+          UI.preview = false;
+          location.hash = meetingHref(saved.forum, saved.id);
+        });
+      };
+    }
+  );
 }
 
 function forumCard(f) {
@@ -645,7 +678,7 @@ async function viewMeetings(app) {
   const tabs = { upcoming: 'Upcoming', past: 'Past', all: 'All' };
   app.innerHTML = `
     <div class="page-head"><div><h1>Meetings</h1><div class="subtitle">Click a meeting to prepare it, take minutes and log actions.</div></div>
-      <div class="toolbar"><button class="primary" id="new-meeting" data-new-meeting title="New meeting (shortcut: N)">+ New meeting<kbd>N</kbd></button></div></div>
+      <div class="toolbar"><button id="adhoc-meeting" data-adhoc title="Start an ad-hoc meeting now (shortcut: A)">⚡ Ad-hoc meeting<kbd>A</kbd></button><button class="primary" id="new-meeting" data-new-meeting title="New meeting (shortcut: N)">+ New meeting<kbd>N</kbd></button></div></div>
     <div class="card">
       <div class="filters">
         <div class="segmented">${Object.entries(tabs).map(([k, v]) => `<button data-when="${k}" class="${F.when === k ? 'active' : ''}">${v}</button>`).join('')}</div>
@@ -1252,9 +1285,12 @@ window.addEventListener('beforeunload', (e) => {
 
 // Shortcuts and delegated buttons that appear on several pages.
 document.addEventListener('keydown', (e) => {
-  if (e.key?.toLowerCase() !== 'n' || e.ctrlKey || e.metaKey || e.altKey) return;
+  const k = e.key?.toLowerCase();
+  if ((k !== 'n' && k !== 'a') || e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.target.closest('input, textarea, select, [contenteditable]') || $('#dialog').open) return;
+  if (!S.config) return;
   e.preventDefault();
+  if (k === 'a') return openAdhocDialog();
   const group = (location.hash.match(/^#\/(?:group|meeting)\/([^/]+)/) || [])[1];
   openNewMeetingDialog(group ? decodeURIComponent(group) : '');
 });
