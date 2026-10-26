@@ -335,6 +335,17 @@ async function sendToPulse(ids) {
   toast(parts.join(' · '), r.failed > 0);
 }
 
+async function syncWithPulse() {
+  const r = await api('POST', '/api/pulse/sync', {});
+  const n = (x) => x.length;
+  const parts = [];
+  if (n(r.updatedHere)) parts.push(`${n(r.updatedHere)} updated here`);
+  if (n(r.updatedInPulse)) parts.push(`${n(r.updatedInPulse)} updated in Pulse`);
+  if (n(r.archivedInPulse)) parts.push(`${n(r.archivedInPulse)} archived in Pulse`);
+  if (n(r.errors)) parts.push(`${n(r.errors)} failed: ${r.errors[0].error}`);
+  toast(`Pulse sync: ${parts.join(' · ') || `${r.checked} linked actions up to date`}`, n(r.errors) > 0);
+}
+
 async function setArchived(ids, archived) {
   await api('POST', '/api/actions/bulk', { ids, op: archived ? 'archive' : 'restore' });
   toast(`${ids.length === 1 ? 'Action' : `${ids.length} actions`} ${archived ? 'archived' : 'restored'}`);
@@ -1034,7 +1045,7 @@ async function viewActions(app) {
 
   app.innerHTML = `
     <div class="page-head"><div><h1>Action items</h1><div class="subtitle" id="action-count">${filtered.length} of ${S.actions.length} shown</div></div>
-      <div class="toolbar"><a class="btn" id="export-csv" href="/api/export?format=csv&${qs}">⬇ Export CSV</a><a class="btn" id="export-json" href="/api/export?format=json&${qs}">⬇ Export JSON</a></div></div>
+      <div class="toolbar"><button type="button" class="btn" id="pulse-sync" title="Two-way sync of the actions linked to Pulse (also runs automatically every 10 minutes)">⇄ Sync with Pulse</button><a class="btn" id="export-csv" href="/api/export?format=csv&${qs}">⬇ Export CSV</a><a class="btn" id="export-json" href="/api/export?format=json&${qs}">⬇ Export JSON</a></div></div>
     <div class="card">
       <div class="filters">
         <input id="f-q" placeholder="🔎 Search actions…" value="${esc(F.q)}" />
@@ -1074,6 +1085,17 @@ async function viewActions(app) {
     }, 300);
   };
   $('#f-reset', app).onclick = () => { UI.actionFilters = { ...DEFAULT_FILTERS }; render(); };
+  $('#pulse-sync', app).onclick = (e) => {
+    e.target.disabled = true;
+    guarded(async () => {
+      try {
+        await syncWithPulse();
+      } finally {
+        e.target.disabled = false;
+      }
+      await render();
+    });
+  };
   bindActionTable($('#action-list', app), filtered, render);
 
   // Selection only keeps actions that are visible with the current filters.
